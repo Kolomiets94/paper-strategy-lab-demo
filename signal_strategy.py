@@ -27,7 +27,10 @@ def sma_crossover_signal(closes: Sequence[float], *, fast_window: int = 3,
         number = value
         if isinstance(number, bool) or not isinstance(number, (int, float)):
             raise InvalidRiskDataError("Prices must be finite positive numbers")
-        number = float(number)
+        try:
+            number = float(number)
+        except (OverflowError, ValueError) as exc:
+            raise InvalidRiskDataError("Prices must be finite positive numbers") from exc
         if not math.isfinite(number) or number <= 0:
             raise InvalidRiskDataError("Prices must be finite positive numbers")
         values.append(number)
