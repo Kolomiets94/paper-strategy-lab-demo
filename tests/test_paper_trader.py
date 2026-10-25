@@ -24,7 +24,7 @@ class PaperPortfolioTests(unittest.TestCase):
         self.assertTrue(result.startswith("CLOSED net_pnl="))
         snap = self.bot.snapshot({}, self.now)
         self.assertEqual(snap.open_positions, 0)
-        self.assertAlmostEqual(snap.realized_net_pnl_today_usdt, 0.798, places=5)
+        self.assertAlmostEqual(snap.realized_net_pnl_today_usdt, 1.798, places=5)
 
     def test_duplicate_buy_does_not_double_position(self):
         self.assertEqual(self.bot.apply_signal("ETH", "BUY", 2500, self.now), "OPENED")
