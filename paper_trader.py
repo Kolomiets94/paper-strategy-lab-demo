@@ -55,9 +55,10 @@ class PaperPortfolio:
         self.config = config
         self.ledger = SQLiteRiskLedger(db_path)
         self.risk = PaperRiskController(self.ledger, config)
-        if isinstance(fee_rate, bool) or not isinstance(fee_rate, (int, float)) or not math.isfinite(float(fee_rate)) or fee_rate < 0 or fee_rate >= 1:
+        fee_value = SQLiteRiskLedger._finite(fee_rate, "fee_rate", nonnegative=True)
+        if fee_value >= 1:
             raise InvalidRiskDataError("fee_rate must be finite and in [0, 1)")
-        self.fee_rate = float(fee_rate)
+        self.fee_rate = fee_value
         try:
             with sqlite3.connect(self.db_path, timeout=5.0) as con:
                 con.execute("""CREATE TABLE IF NOT EXISTS paper_account (
