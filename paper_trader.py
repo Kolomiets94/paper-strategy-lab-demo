@@ -61,12 +61,37 @@ class PaperPortfolio:
         self.risk = PaperRiskController(self.ledger, config)
         try:
             with sqlite3.connect(self.db_path, timeout=5.0) as con:
-                con.execute("""CREATE TABLE IF NOT EXISTS paper_account (
-                    id INTEGER PRIMARY KEY CHECK(id = 1),
-                    cash_usdt REAL NOT NULL
-                )""")
-                con.execute("INSERT OR IGNORE INTO paper_account(id, cash_usdt) VALUES (1, ?)",
-                            (float(config.paper_capital_usdt),))
+                existing_tables = {
+                    row[0] for row in con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                account_exists = "paper_account" in existing_tables
+                positions_exist = "paper_positions" in existing_tables
+
+                if account_exists:
+                    row = con.execute(
+                        "SELECT cash_usdt FROM paper_account WHERE id=1"
+                    ).fetchone()
+                    if row is None:
+                        raise InvalidRiskDataError(
+                            "Paper cash account is missing from an existing database"
+                        )
+                    self._number(row[0], "stored paper cash")
+                elif positions_exist:
+                    raise InvalidRiskDataError(
+                        "Paper cash account is missing while persisted positions exist"
+                    )
+                else:
+                    con.execute("""CREATE TABLE paper_account (
+                        id INTEGER PRIMARY KEY CHECK(id = 1),
+                        cash_usdt REAL NOT NULL
+                    )""")
+                    con.execute(
+                        "INSERT INTO paper_account(id, cash_usdt) VALUES (1, ?)",
+                        (float(config.paper_capital_usdt),),
+                    )
+
                 con.execute("""CREATE TABLE IF NOT EXISTS paper_positions (
                     symbol TEXT PRIMARY KEY,
                     quantity REAL NOT NULL,
@@ -75,6 +100,8 @@ class PaperPortfolio:
                     entry_fee_usdt REAL NOT NULL,
                     opened_at TEXT NOT NULL
                 )""")
+        except InvalidRiskDataError:
+            raise
         except (sqlite3.Error, OSError) as exc:
             raise LedgerUnavailableError("Could not initialize paper portfolio") from exc
 
