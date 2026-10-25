@@ -3,7 +3,7 @@ import argparse
 import json
 from datetime import datetime, timezone
 
-from paper_trader import PaperPortfolio, SUPPORTED_SYMBOLS
+from paper_trader import PaperPortfolio
 
 
 def main():
@@ -13,8 +13,11 @@ def main():
     parser.add_argument("--signals", default="{}", help='JSON, e.g. \'{"BTC":"BUY"}\'')
     parser.add_argument("--status-only", action="store_true")
     args = parser.parse_args()
-    prices = json.loads(args.prices)
-    signals = json.loads(args.signals)
+    try:
+        prices = json.loads(args.prices)
+        signals = json.loads(args.signals)
+    except json.JSONDecodeError as exc:
+        parser.error(f"invalid JSON: {exc.msg}")
     if not isinstance(prices, dict) or not isinstance(signals, dict):
         parser.error("--prices and --signals must be JSON objects")
     now = datetime.now(timezone.utc)
