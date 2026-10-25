@@ -72,6 +72,19 @@ class PaperPortfolioTests(unittest.TestCase):
             self.bot.apply_signal("BTC", "SELL", 51000, self.now, execution_id="")
         self.assertEqual(len(self.bot.positions()), 1)
 
+    def test_close_with_missing_cash_account_rolls_back(self):
+        self.bot.apply_signal("BTC", "BUY", 50000, self.now)
+        with self.bot._connect() as con:
+            con.execute("DELETE FROM paper_account WHERE id=1")
+        with self.assertRaises(InvalidRiskDataError):
+            self.bot.apply_signal("BTC", "SELL", 51000, self.now, execution_id="missing-cash")
+        self.assertEqual(len(self.bot.positions()), 1)
+        with self.bot._connect() as con:
+            row = con.execute(
+                "SELECT 1 FROM executions WHERE execution_id='missing-cash'"
+            ).fetchone()
+        self.assertIsNone(row)
+
     def test_invalid_fee_rate_fails_closed(self):
         for fee_rate in (-0.1, 1.0, float("nan"), 10 ** 1000):
             with self.subTest(fee_rate=str(fee_rate)[:20]):
