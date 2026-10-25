@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from paper_trader import PaperPortfolio
-from risk_control import InvalidRiskDataError, RiskConfig
+from risk_control import DuplicateExecutionError, InvalidRiskDataError, RiskConfig
 
 
 class PaperPortfolioTests(unittest.TestCase):
@@ -55,6 +55,16 @@ class PaperPortfolioTests(unittest.TestCase):
     def test_missing_price_for_signal_fails_closed(self):
         with self.assertRaises(InvalidRiskDataError):
             self.bot.process_signals({}, {"BTC": "BUY"}, self.now)
+
+    def test_duplicate_close_execution_is_atomic(self):
+        self.bot.apply_signal("BTC", "BUY", 50000, self.now)
+        self.bot.ledger.record_execution("used-id", 0.0, 0.0, self.now)
+        cash_before = self.bot.snapshot({"BTC": 50000}, self.now).cash_usdt
+        with self.assertRaises(DuplicateExecutionError):
+            self.bot.apply_signal("BTC", "SELL", 51000, self.now, execution_id="used-id")
+        self.assertEqual(len(self.bot.positions()), 1)
+        self.assertAlmostEqual(self.bot._cash(), cash_before)
+        self.assertAlmostEqual(self.bot.ledger.daily_net_pnl_usdt(self.now), 0.0)
 
     def test_hold_does_not_trade(self):
         self.assertEqual(self.bot.apply_signal("BTC", "HOLD", 50000, self.now), "HOLD")
