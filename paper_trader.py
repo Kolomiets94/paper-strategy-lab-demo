@@ -169,6 +169,8 @@ class PaperPortfolio:
         total_fees = position.entry_fee_usdt + exit_fee
         net_pnl = gross_pnl - total_fees
         exec_id = execution_id or f"paper-{uuid.uuid4().hex}"
+        if not isinstance(exec_id, str) or not exec_id.strip():
+            raise InvalidRiskDataError("execution_id must be non-empty")
         try:
             # Ledger entry, cash update, and position removal share one SQLite
             # transaction: a crash cannot leave a recorded fill with an open position.
