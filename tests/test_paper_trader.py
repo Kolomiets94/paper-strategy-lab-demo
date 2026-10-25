@@ -55,6 +55,13 @@ class PaperPortfolioTests(unittest.TestCase):
         with self.assertRaises(InvalidRiskDataError):
             PaperPortfolio(self.db)
 
+    def test_restart_with_missing_positions_table_fails_closed(self):
+        self.bot.apply_signal("BTC", "BUY", 50000, self.now)
+        with self.bot._connect() as con:
+            con.execute("DROP TABLE paper_positions")
+        with self.assertRaises(InvalidRiskDataError):
+            PaperPortfolio(self.db)
+
     def test_daily_loss_stop_blocks_new_entry(self):
         self.bot.ledger.record_execution("loss1", -4.8, 0.2, self.now)
         self.assertEqual(self.bot.apply_signal("BTC", "BUY", 50000, self.now), "RISK_BLOCKED")
