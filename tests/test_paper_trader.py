@@ -66,6 +66,31 @@ class PaperPortfolioTests(unittest.TestCase):
         self.bot.ledger.record_execution("loss1", -4.8, 0.2, self.now)
         self.assertEqual(self.bot.apply_signal("BTC", "BUY", 50000, self.now), "RISK_BLOCKED")
 
+    def test_unrealized_loss_blocks_new_entry_and_snapshot_flags_stop(self):
+        self.assertEqual(self.bot.apply_signal("BTC", "BUY", 100, self.now), "OPENED")
+        snap = self.bot.snapshot({"BTC": 90}, self.now)
+        self.assertLess(snap.equity_usdt, 995.0)
+        self.assertTrue(snap.trading_blocked)
+        self.assertEqual(
+            self.bot.apply_signal("ETH", "BUY", 100, self.now), "RISK_BLOCKED"
+        )
+
+    def test_mark_to_market_loss_includes_fees_and_persists_across_restart(self):
+        self.assertEqual(self.bot.apply_signal("BTC", "BUY", 100, self.now), "OPENED")
+        self.bot.snapshot({"BTC": 90}, self.now)
+        reopened = PaperPortfolio(self.db, fee_rate=0.001)
+        self.assertLess(reopened.risk.daily_risk_pnl_usdt(self.now), -10.0)
+        self.assertEqual(
+            reopened.apply_signal("ETH", "BUY", 100, self.now), "RISK_BLOCKED"
+        )
+
+    def test_process_signals_refreshes_existing_position_mark_before_new_entry(self):
+        self.assertEqual(self.bot.apply_signal("BTC", "BUY", 100, self.now), "OPENED")
+        outcomes = self.bot.process_signals(
+            {"BTC": 90, "ETH": 100}, {"ETH": "BUY"}, self.now
+        )
+        self.assertEqual(outcomes["ETH"], "RISK_BLOCKED")
+
     def test_entry_rechecks_loss_stop_after_initial_gate(self):
         original_gate = self.bot.risk.can_open_position
         calls = 0

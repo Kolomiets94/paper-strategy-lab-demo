@@ -5,6 +5,7 @@ No exchange connectivity, credentials, order submission, or live trading.
 from __future__ import annotations
 
 import math
+from contextlib import closing
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -38,7 +39,7 @@ class SQLiteRiskLedger:
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 con.execute("PRAGMA journal_mode=WAL")
                 con.execute("""CREATE TABLE IF NOT EXISTS executions (
                     execution_id TEXT PRIMARY KEY,
@@ -79,7 +80,7 @@ class SQLiteRiskLedger:
         fees = self._finite(fees_usdt, "fees", nonnegative=True)
         timestamp = self._timestamp(executed_at)
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 con.execute("INSERT INTO executions VALUES (?, ?, ?, ?)",
                             (execution_id.strip(), pnl, fees, timestamp))
         except sqlite3.IntegrityError as exc:
@@ -92,7 +93,7 @@ class SQLiteRiskLedger:
         start = current.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 rows = con.execute(
                     "SELECT execution_id, realized_pnl_usdt, fees_usdt FROM executions "
                     "WHERE executed_at_utc >= ? AND executed_at_utc < ?",
@@ -115,15 +116,59 @@ class PaperRiskController:
     def _finite(value, label: str, *, nonnegative: bool = False) -> float:
         return SQLiteRiskLedger._finite(value, label, nonnegative=nonnegative)
 
-    def __init__(self, ledger: SQLiteRiskLedger, config: RiskConfig = RiskConfig()):
+    def __init__(self, ledger: SQLiteRiskLedger, config: RiskConfig = RiskConfig(),
+                 fee_rate: float = 0.001):
         self.ledger = ledger
         self.config = config
+        self.fee_rate = self._finite(fee_rate, "fee rate", nonnegative=True)
+        if self.fee_rate >= 1:
+            raise InvalidRiskDataError("fee rate must be in [0, 1)")
         for name, value in (("capital", config.paper_capital_usdt),
                             ("position cap", config.max_position_notional_usdt),
                             ("daily loss limit", config.daily_loss_limit_usdt)):
             self._finite(value, name, nonnegative=True)
             if value <= 0:
                 raise InvalidRiskDataError(f"{name} must be positive")
+
+    def daily_risk_pnl_usdt(self, now: datetime) -> float:
+        """Realized net P&L today plus conservative net mark-to-market P&L.
+
+        Open positions without a saved mark use entry price, so entry/estimated
+        exit fees are still included. All open-position unrealized P&L is counted,
+        even for positions opened on prior days; this is deliberately conservative.
+        """
+        total = self.ledger.daily_net_pnl_usdt(now)
+        try:
+            with closing(self.ledger._connect()) as con, con:
+                tables = {row[0] for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()}
+                if "paper_positions" not in tables:
+                    return total
+                if "mark_prices" in tables:
+                    rows = con.execute(
+                        "SELECT p.quantity, p.entry_notional_usdt, p.entry_fee_usdt, "
+                        "COALESCE(m.price_usdt, p.entry_price) "
+                        "FROM paper_positions p LEFT JOIN mark_prices m ON m.symbol=p.symbol"
+                    ).fetchall()
+                else:
+                    rows = con.execute(
+                        "SELECT quantity, entry_notional_usdt, entry_fee_usdt, entry_price "
+                        "FROM paper_positions"
+                    ).fetchall()
+        except (sqlite3.Error, OSError) as exc:
+            raise LedgerUnavailableError("Could not value open paper positions for risk") from exc
+        for quantity, entry_notional, entry_fee, mark_price in rows:
+            qty = self._finite(quantity, "stored position quantity", nonnegative=True)
+            notional = self._finite(entry_notional, "stored position notional", nonnegative=True)
+            entry_fee_value = self._finite(entry_fee, "stored entry fee", nonnegative=True)
+            mark = self._finite(mark_price, "stored mark price", nonnegative=True)
+            if qty <= 0 or mark <= 0:
+                raise InvalidRiskDataError("Invalid open-position valuation data")
+            market_value = qty * mark
+            unrealized_net = market_value - notional - entry_fee_value - market_value * self.fee_rate
+            total += self._finite(unrealized_net, "unrealized net P&L")
+        return self._finite(total, "daily risk P&L")
 
     def can_open_position(self, notional_usdt: float, now: datetime) -> bool:
         """Return False when limits are hit; raise on uncertainty (caller must block)."""
@@ -132,5 +177,5 @@ class PaperRiskController:
             raise InvalidRiskDataError("Position notional must be positive")
         if notional > self.config.max_position_notional_usdt or notional > self.config.paper_capital_usdt:
             return False
-        daily_pnl = self.ledger.daily_net_pnl_usdt(now)
+        daily_pnl = self.daily_risk_pnl_usdt(now)
         return daily_pnl > -self.config.daily_loss_limit_usdt
