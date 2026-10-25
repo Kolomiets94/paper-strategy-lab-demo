@@ -7,6 +7,7 @@ risk gate; closes are recorded once using unique execution IDs.
 from __future__ import annotations
 
 import math
+from contextlib import closing
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -60,7 +61,7 @@ class PaperPortfolio:
         self.ledger = SQLiteRiskLedger(db_path)
         self.risk = PaperRiskController(self.ledger, config)
         try:
-            with sqlite3.connect(self.db_path, timeout=5.0) as con:
+            with closing(sqlite3.connect(self.db_path, timeout=5.0)) as con, con:
                 existing_tables = {
                     row[0] for row in con.execute(
                         "SELECT name FROM sqlite_master WHERE type='table'"
@@ -128,7 +129,7 @@ class PaperPortfolio:
 
     def positions(self) -> dict[str, PaperPosition]:
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 rows = con.execute(
                     "SELECT symbol, quantity, entry_price, entry_notional_usdt, entry_fee_usdt, opened_at FROM paper_positions"
                 ).fetchall()
@@ -147,7 +148,7 @@ class PaperPortfolio:
 
     def _cash(self) -> float:
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 row = con.execute("SELECT cash_usdt FROM paper_account WHERE id=1").fetchone()
             if row is None:
                 raise InvalidRiskDataError("Paper cash account is missing")
@@ -191,7 +192,7 @@ class PaperPortfolio:
             if not math.isfinite(quantity) or quantity <= 0:
                 raise InvalidRiskDataError("Calculated quantity is not finite and positive")
             try:
-                with self._connect() as con:
+                with closing(self._connect()) as con, con:
                     # Serialize entry checks with ledger writes so a concurrent close
                     # cannot cross the daily-loss stop between the check and the fill.
                     con.execute("BEGIN IMMEDIATE")
@@ -239,7 +240,7 @@ class PaperPortfolio:
         try:
             # Ledger entry, cash update, and position removal share one SQLite
             # transaction: a crash cannot leave a recorded fill with an open position.
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 cash_row = con.execute("SELECT cash_usdt FROM paper_account WHERE id=1").fetchone()
                 if cash_row is None:
                     raise InvalidRiskDataError("Paper cash account is missing")
