@@ -147,12 +147,24 @@ class PaperPortfolio:
             if self._cash() < notional + fee:
                 return "INSUFFICIENT_CASH"
             quantity = notional / price
+            if not math.isfinite(quantity) or quantity <= 0:
+                raise InvalidRiskDataError("Calculated quantity is not finite and positive")
             try:
                 with self._connect() as con:
-                    # Recheck uniqueness inside transaction to avoid duplicate concurrent entries.
+                    row = con.execute("SELECT cash_usdt FROM paper_account WHERE id=1").fetchone()
+                    if row is None:
+                        raise InvalidRiskDataError("Paper cash account is missing")
+                    cash_now = self._number(row[0], "paper cash")
+                    if cash_now < notional + fee:
+                        return "INSUFFICIENT_CASH"
                     if con.execute("SELECT 1 FROM paper_positions WHERE symbol=?", (symbol,)).fetchone():
                         return "ALREADY_OPEN"
-                    con.execute("UPDATE paper_account SET cash_usdt=cash_usdt-? WHERE id=1", (notional + fee,))
+                    changed = con.execute(
+                        "UPDATE paper_account SET cash_usdt=cash_usdt-? WHERE id=1 AND cash_usdt>=?",
+                        (notional + fee, notional + fee),
+                    ).rowcount
+                    if changed != 1:
+                        return "INSUFFICIENT_CASH"
                     con.execute("INSERT INTO paper_positions VALUES (?, ?, ?, ?, ?, ?)",
                                 (symbol, quantity, price, notional, fee, timestamp))
                 return "OPENED"
@@ -163,10 +175,16 @@ class PaperPortfolio:
         if position is None:
             return "NO_POSITION"
         gross_proceeds = position.quantity * price
+        if not math.isfinite(gross_proceeds) or gross_proceeds < 0:
+            raise InvalidRiskDataError("Calculated sale proceeds are invalid")
         exit_fee = gross_proceeds * self.fee_rate
         # Entry fee is charged to cash at entry; both entry and exit fees count against realized P&L.
         gross_pnl = gross_proceeds - position.entry_notional_usdt
         total_fees = position.entry_fee_usdt + exit_fee
+        SQLiteRiskLedger._finite(gross_pnl, "realized P&L")
+        SQLiteRiskLedger._finite(total_fees, "total fees", nonnegative=True)
+        if not math.isfinite(gross_proceeds - exit_fee):
+            raise InvalidRiskDataError("Net sale proceeds are invalid")
         net_pnl = gross_pnl - total_fees
         exec_id = execution_id or f"paper-{uuid.uuid4().hex}"
         if not isinstance(exec_id, str) or not exec_id.strip():
