@@ -22,6 +22,10 @@ class SignalStrategyTests(unittest.TestCase):
         with self.assertRaises(InvalidRiskDataError):
             sma_crossover_signal([1, 2, 3, 4, float("nan"), 6])
 
+    def test_overflowing_moving_average_rejected(self):
+        with self.assertRaises(InvalidRiskDataError):
+            sma_crossover_signal([1e308, 1e308, 1e308, 1e308, 1e308, 1e308])
+
     def test_invalid_windows_rejected(self):
         with self.assertRaises(InvalidRiskDataError):
             sma_crossover_signal([1, 2, 3, 4, 5, 6], fast_window=5, slow_window=3)
