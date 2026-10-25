@@ -37,9 +37,53 @@ class PaperPortfolioTests(unittest.TestCase):
         self.assertEqual(len(reopened.positions()), 1)
         self.assertAlmostEqual(reopened.snapshot({"SOL": 100}, self.now).cash_usdt, 899.9)
 
+    def test_restart_with_missing_cash_account_fails_closed(self):
+        self.bot.apply_signal("BTC", "BUY", 50000, self.now)
+        with self.bot._connect() as con:
+            con.execute("DELETE FROM paper_account WHERE id=1")
+        with self.assertRaises(InvalidRiskDataError):
+            PaperPortfolio(self.db)
+        # Recovery must not silently recreate starting capital or discard the position.
+        with self.bot._connect() as con:
+            self.assertEqual(
+                con.execute("SELECT COUNT(*) FROM paper_positions").fetchone()[0], 1
+            )
+
+    def test_restart_with_invalid_cash_fails_closed(self):
+        with self.bot._connect() as con:
+            con.execute("UPDATE paper_account SET cash_usdt=-1 WHERE id=1")
+        with self.assertRaises(InvalidRiskDataError):
+            PaperPortfolio(self.db)
+
+    def test_restart_with_missing_positions_table_fails_closed(self):
+        self.bot.apply_signal("BTC", "BUY", 50000, self.now)
+        with self.bot._connect() as con:
+            con.execute("DROP TABLE paper_positions")
+        with self.assertRaises(InvalidRiskDataError):
+            PaperPortfolio(self.db)
+
     def test_daily_loss_stop_blocks_new_entry(self):
         self.bot.ledger.record_execution("loss1", -4.8, 0.2, self.now)
         self.assertEqual(self.bot.apply_signal("BTC", "BUY", 50000, self.now), "RISK_BLOCKED")
+
+    def test_entry_rechecks_loss_stop_after_initial_gate(self):
+        original_gate = self.bot.risk.can_open_position
+        calls = 0
+
+        def inject_concurrent_loss(notional, now):
+            nonlocal calls
+            calls += 1
+            allowed = original_gate(notional, now)
+            if calls == 1:
+                self.bot.ledger.record_execution("concurrent-loss", -6.0, 0.0, now)
+            return allowed
+
+        self.bot.risk.can_open_position = inject_concurrent_loss
+        self.assertEqual(
+            self.bot.apply_signal("BTC", "BUY", 50000, self.now), "RISK_BLOCKED"
+        )
+        self.assertEqual(calls, 2)
+        self.assertEqual(len(self.bot.positions()), 0)
 
     def test_max_notional_is_100(self):
         self.bot.apply_signal("BTC", "BUY", 50000, self.now)
