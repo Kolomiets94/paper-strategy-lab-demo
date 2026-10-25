@@ -108,6 +108,10 @@ class SQLiteRiskLedger:
 
 
 class PaperRiskController:
+    @staticmethod
+    def _finite(value, label: str, *, nonnegative: bool = False) -> float:
+        return SQLiteRiskLedger._finite(value, label, nonnegative=nonnegative)
+
     def __init__(self, ledger: SQLiteRiskLedger, config: RiskConfig = RiskConfig()):
         self.ledger = ledger
         self.config = config
