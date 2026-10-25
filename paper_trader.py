@@ -141,9 +141,12 @@ class PaperPortfolio:
                 return "ALREADY_OPEN"
             # Size down to leave room for the entry fee while respecting the cap.
             available_cash = self._cash()
+            cash_limited_notional = math.nextafter(
+                available_cash / (1.0 + self.fee_rate), 0.0
+            )
             notional = min(
                 self.config.max_position_notional_usdt,
-                available_cash / (1.0 + self.fee_rate),
+                cash_limited_notional,
             )
             if notional <= 0:
                 return "INSUFFICIENT_CASH"
