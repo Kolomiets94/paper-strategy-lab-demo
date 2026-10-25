@@ -170,13 +170,22 @@ class PaperPortfolio:
         net_pnl = gross_pnl - total_fees
         exec_id = execution_id or f"paper-{uuid.uuid4().hex}"
         try:
-            # Write the ledger first: if it fails, keep the position open (fail closed).
-            self.ledger.record_execution(exec_id, gross_pnl, total_fees, now)
+            # Ledger entry, cash update, and position removal share one SQLite
+            # transaction: a crash cannot leave a recorded fill with an open position.
             with self._connect() as con:
+                con.execute(
+                    "INSERT INTO executions (execution_id, realized_pnl_usdt, fees_usdt, executed_at_utc) VALUES (?, ?, ?, ?)",
+                    (exec_id.strip(), SQLiteRiskLedger._finite(gross_pnl, "realized P&L"),
+                     SQLiteRiskLedger._finite(total_fees, "fees", nonnegative=True), timestamp),
+                )
                 con.execute("UPDATE paper_account SET cash_usdt=cash_usdt+? WHERE id=1",
                             (gross_proceeds - exit_fee,))
-                con.execute("DELETE FROM paper_positions WHERE symbol=?", (symbol,))
-        except DuplicateExecutionError:
+                deleted = con.execute("DELETE FROM paper_positions WHERE symbol=?", (symbol,)).rowcount
+                if deleted != 1:
+                    raise InvalidRiskDataError("Position changed during close; transaction rolled back")
+        except sqlite3.IntegrityError as exc:
+            raise DuplicateExecutionError(f"Duplicate execution ID: {exec_id}") from exc
+        except InvalidRiskDataError:
             raise
         except (sqlite3.Error, OSError) as exc:
             raise LedgerUnavailableError("Could not close paper position cleanly") from exc
