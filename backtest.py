@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from contextlib import closing
 import math
 import sqlite3
 import tempfile
@@ -144,7 +145,7 @@ def run_backtest(bars: Iterable[Bar], *, capital: float = 1000.0,
             result = portfolio.apply_signal("BTC", signal, fill, bar.timestamp,
                                             execution_id=f"bt-{i}-{signal.lower()}")
             if result.startswith("CLOSED "):
-                with sqlite3.connect(db_path) as con:
+                with closing(sqlite3.connect(db_path)) as con:
                     row = con.execute(
                         "SELECT realized_pnl_usdt, fees_usdt FROM executions WHERE execution_id=?",
                         (f"bt-{i}-{signal.lower()}",),
