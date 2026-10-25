@@ -14,7 +14,7 @@ For the recorded BTCUSDT run, 1,000 daily candles were obtained from Binance's p
 python3 backtest.py path/to/BTCUSDT_1d.csv
 ```
 
-Defaults mirror the paper risk settings: 1,000 USDT virtual capital, 100 USDT maximum notional per position, 5 USDT daily realized-loss stop, 0.1% fee per side, 5 basis points adverse slippage per side, and SMA windows 3/5.
+Defaults mirror the paper risk settings: 1,000 USDT virtual capital, 100 USDT maximum notional per position, 5 USDT daily risk stop (realized plus open-position mark-to-market loss), 0.1% fee per side, 5 basis points adverse slippage per side, and SMA windows 3/5.
 
 ## Methodology and limitations
 
@@ -23,5 +23,5 @@ Defaults mirror the paper risk settings: 1,000 USDT virtual capital, 100 USDT ma
 - Entry and exit fees are charged; the ending open position is forcibly liquidated at the last candle's close with adverse slippage.
 - The benchmark buys one position capped at the same maximum notional on the first candle and holds to the end, using the same fee and slippage assumptions.
 - Maximum drawdown uses daily close-marked equity; it does not capture intraday excursions.
-- The daily loss stop is based on realized net P&L, as defined by the paper ledger; unrealized losses do not trigger it.
+- The daily loss stop includes realized net P&L for the current UTC day plus net mark-to-market P&L for open positions, including entry and estimated exit fees. Open-position P&L is counted conservatively in full even if a position was opened on a prior day. Daily candles still cannot capture intraday excursions.
 - The output is a historical simulation, not a forecast. Daily candles, simplified fill assumptions, and the chosen date range can materially affect results. No claim of profitability should be made from a single backtest.
