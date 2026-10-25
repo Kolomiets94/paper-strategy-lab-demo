@@ -48,8 +48,10 @@ class RiskControlTests(unittest.TestCase):
         self.assertFalse(self.risk.can_open_position(100.01, self.now))
 
     def test_invalid_pnl_rejected(self):
-        with self.assertRaises(InvalidRiskDataError):
-            self.ledger.record_execution("nan", float("nan"), 0, self.now)
+        for execution_id, value in (("nan", float("nan")), ("overflow", 10 ** 1000)):
+            with self.subTest(execution_id=execution_id):
+                with self.assertRaises(InvalidRiskDataError):
+                    self.ledger.record_execution(execution_id, value, 0, self.now)
 
     def test_naive_timestamp_rejected(self):
         with self.assertRaises(InvalidRiskDataError):
