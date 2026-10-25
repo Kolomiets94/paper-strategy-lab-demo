@@ -66,6 +66,12 @@ class PaperPortfolioTests(unittest.TestCase):
         self.assertAlmostEqual(self.bot._cash(), cash_before)
         self.assertAlmostEqual(self.bot.ledger.daily_net_pnl_usdt(self.now), 0.0)
 
+    def test_empty_execution_id_is_rejected_without_closing_position(self):
+        self.bot.apply_signal("BTC", "BUY", 50000, self.now)
+        with self.assertRaises(InvalidRiskDataError):
+            self.bot.apply_signal("BTC", "SELL", 51000, self.now, execution_id="")
+        self.assertEqual(len(self.bot.positions()), 1)
+
     def test_hold_does_not_trade(self):
         self.assertEqual(self.bot.apply_signal("BTC", "HOLD", 50000, self.now), "HOLD")
         self.assertEqual(len(self.bot.positions()), 0)
