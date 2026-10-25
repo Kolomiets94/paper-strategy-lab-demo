@@ -186,7 +186,7 @@ class PaperPortfolio:
         if not math.isfinite(gross_proceeds - exit_fee):
             raise InvalidRiskDataError("Net sale proceeds are invalid")
         net_pnl = gross_pnl - total_fees
-        exec_id = execution_id or f"paper-{uuid.uuid4().hex}"
+        exec_id = f"paper-{uuid.uuid4().hex}" if execution_id is None else execution_id
         if not isinstance(exec_id, str) or not exec_id.strip():
             raise InvalidRiskDataError("execution_id must be non-empty")
         try:
