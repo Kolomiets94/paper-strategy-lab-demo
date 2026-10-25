@@ -7,6 +7,7 @@ risk gate; closes are recorded once using unique execution IDs.
 from __future__ import annotations
 
 import math
+from contextlib import closing
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -58,15 +59,44 @@ class PaperPortfolio:
         self.config = config
         self.fee_rate = fee_value
         self.ledger = SQLiteRiskLedger(db_path)
-        self.risk = PaperRiskController(self.ledger, config)
+        self.risk = PaperRiskController(self.ledger, config, fee_rate=self.fee_rate)
         try:
-            with sqlite3.connect(self.db_path, timeout=5.0) as con:
-                con.execute("""CREATE TABLE IF NOT EXISTS paper_account (
-                    id INTEGER PRIMARY KEY CHECK(id = 1),
-                    cash_usdt REAL NOT NULL
-                )""")
-                con.execute("INSERT OR IGNORE INTO paper_account(id, cash_usdt) VALUES (1, ?)",
-                            (float(config.paper_capital_usdt),))
+            with closing(sqlite3.connect(self.db_path, timeout=5.0)) as con, con:
+                existing_tables = {
+                    row[0] for row in con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                account_exists = "paper_account" in existing_tables
+                positions_exist = "paper_positions" in existing_tables
+                if account_exists != positions_exist:
+                    raise InvalidRiskDataError(
+                        "Paper portfolio database has an incomplete account/positions schema"
+                    )
+
+                if account_exists:
+                    row = con.execute(
+                        "SELECT cash_usdt FROM paper_account WHERE id=1"
+                    ).fetchone()
+                    if row is None:
+                        raise InvalidRiskDataError(
+                            "Paper cash account is missing from an existing database"
+                        )
+                    self._number(row[0], "stored paper cash")
+                elif positions_exist:
+                    raise InvalidRiskDataError(
+                        "Paper cash account is missing while persisted positions exist"
+                    )
+                else:
+                    con.execute("""CREATE TABLE paper_account (
+                        id INTEGER PRIMARY KEY CHECK(id = 1),
+                        cash_usdt REAL NOT NULL
+                    )""")
+                    con.execute(
+                        "INSERT INTO paper_account(id, cash_usdt) VALUES (1, ?)",
+                        (float(config.paper_capital_usdt),),
+                    )
+
                 con.execute("""CREATE TABLE IF NOT EXISTS paper_positions (
                     symbol TEXT PRIMARY KEY,
                     quantity REAL NOT NULL,
@@ -75,6 +105,13 @@ class PaperPortfolio:
                     entry_fee_usdt REAL NOT NULL,
                     opened_at TEXT NOT NULL
                 )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS mark_prices (
+                    symbol TEXT PRIMARY KEY,
+                    price_usdt REAL NOT NULL,
+                    marked_at_utc TEXT NOT NULL
+                )""")
+        except InvalidRiskDataError:
+            raise
         except (sqlite3.Error, OSError) as exc:
             raise LedgerUnavailableError("Could not initialize paper portfolio") from exc
 
@@ -95,9 +132,31 @@ class PaperPortfolio:
         except (sqlite3.Error, OSError) as exc:
             raise LedgerUnavailableError("Paper database unavailable") from exc
 
+    def _save_marks(self, prices: Mapping[str, float], now: datetime) -> None:
+        """Persist caller-supplied marks so entry checks can include open-position risk."""
+        if not isinstance(prices, Mapping):
+            raise InvalidRiskDataError("prices must be a mapping")
+        timestamp = self._now(now)
+        try:
+            with closing(self._connect()) as con, con:
+                for symbol, value in prices.items():
+                    if symbol not in SUPPORTED_SYMBOLS:
+                        continue
+                    price = self._number(value, f"mark price for {symbol}", positive=True)
+                    con.execute(
+                        "INSERT INTO mark_prices(symbol, price_usdt, marked_at_utc) VALUES (?, ?, ?) "
+                        "ON CONFLICT(symbol) DO UPDATE SET price_usdt=excluded.price_usdt, "
+                        "marked_at_utc=excluded.marked_at_utc",
+                        (symbol, price, timestamp),
+                    )
+        except InvalidRiskDataError:
+            raise
+        except (sqlite3.Error, OSError) as exc:
+            raise LedgerUnavailableError("Could not persist paper mark prices") from exc
+
     def positions(self) -> dict[str, PaperPosition]:
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 rows = con.execute(
                     "SELECT symbol, quantity, entry_price, entry_notional_usdt, entry_fee_usdt, opened_at FROM paper_positions"
                 ).fetchall()
@@ -116,7 +175,7 @@ class PaperPortfolio:
 
     def _cash(self) -> float:
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 row = con.execute("SELECT cash_usdt FROM paper_account WHERE id=1").fetchone()
             if row is None:
                 raise InvalidRiskDataError("Paper cash account is missing")
@@ -136,6 +195,7 @@ class PaperPortfolio:
         timestamp = self._now(now)
         if signal == "HOLD":
             return "HOLD"
+        self._save_marks({symbol: price}, now)
         positions = self.positions()
         if signal == "BUY":
             if symbol in positions:
@@ -160,7 +220,12 @@ class PaperPortfolio:
             if not math.isfinite(quantity) or quantity <= 0:
                 raise InvalidRiskDataError("Calculated quantity is not finite and positive")
             try:
-                with self._connect() as con:
+                with closing(self._connect()) as con, con:
+                    # Serialize entry checks with ledger writes so a concurrent close
+                    # cannot cross the daily-loss stop between the check and the fill.
+                    con.execute("BEGIN IMMEDIATE")
+                    if not self.risk.can_open_position(notional, now):
+                        return "RISK_BLOCKED"
                     row = con.execute("SELECT cash_usdt FROM paper_account WHERE id=1").fetchone()
                     if row is None:
                         raise InvalidRiskDataError("Paper cash account is missing")
@@ -203,7 +268,7 @@ class PaperPortfolio:
         try:
             # Ledger entry, cash update, and position removal share one SQLite
             # transaction: a crash cannot leave a recorded fill with an open position.
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 cash_row = con.execute("SELECT cash_usdt FROM paper_account WHERE id=1").fetchone()
                 if cash_row is None:
                     raise InvalidRiskDataError("Paper cash account is missing")
@@ -237,6 +302,9 @@ class PaperPortfolio:
         unknown_symbols = set(signals) - set(SUPPORTED_SYMBOLS)
         if unknown_symbols:
             raise InvalidRiskDataError(f"Unsupported signal symbols: {sorted(map(str, unknown_symbols))}")
+        # Refresh every available mark before evaluating entries, so the risk gate
+        # sees current unrealized P&L for positions already held in the portfolio.
+        self._save_marks(prices, now)
         outcomes = {}
         for symbol in SUPPORTED_SYMBOLS:
             if symbol in signals:
@@ -246,6 +314,7 @@ class PaperPortfolio:
         return outcomes
 
     def snapshot(self, prices: Mapping[str, float], now: datetime) -> PaperSnapshot:
+        self._save_marks(prices, now)
         positions = self.positions()
         market_value = 0.0
         for symbol, position in positions.items():
@@ -256,9 +325,10 @@ class PaperPortfolio:
         equity = cash + market_value
         if not math.isfinite(equity) or equity < 0:
             raise InvalidRiskDataError("Invalid paper equity")
-        daily_pnl = self.ledger.daily_net_pnl_usdt(now)
-        return PaperSnapshot(cash, equity, len(positions), daily_pnl,
-                             daily_pnl <= -self.config.daily_loss_limit_usdt)
+        realized_daily_pnl = self.ledger.daily_net_pnl_usdt(now)
+        daily_risk_pnl = self.risk.daily_risk_pnl_usdt(now)
+        return PaperSnapshot(cash, equity, len(positions), realized_daily_pnl,
+                             daily_risk_pnl <= -self.config.daily_loss_limit_usdt)
 
     def status(self, prices: Mapping[str, float], now: datetime) -> dict:
         snap = self.snapshot(prices, now)
@@ -269,6 +339,9 @@ class PaperPortfolio:
             "equity_usdt": round(snap.equity_usdt, 6),
             "open_positions": snap.open_positions,
             "realized_net_pnl_today_usdt": round(snap.realized_net_pnl_today_usdt, 6),
+            "daily_risk_pnl_including_unrealized_usdt": round(
+                self.risk.daily_risk_pnl_usdt(now), 6
+            ),
             "daily_stop_usdt": -self.config.daily_loss_limit_usdt,
             "max_position_notional_usdt": self.config.max_position_notional_usdt,
             "trading_blocked": snap.trading_blocked,
