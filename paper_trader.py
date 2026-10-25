@@ -192,6 +192,11 @@ class PaperPortfolio:
                 raise InvalidRiskDataError("Calculated quantity is not finite and positive")
             try:
                 with self._connect() as con:
+                    # Serialize entry checks with ledger writes so a concurrent close
+                    # cannot cross the daily-loss stop between the check and the fill.
+                    con.execute("BEGIN IMMEDIATE")
+                    if not self.risk.can_open_position(notional, now):
+                        return "RISK_BLOCKED"
                     row = con.execute("SELECT cash_usdt FROM paper_account WHERE id=1").fetchone()
                     if row is None:
                         raise InvalidRiskDataError("Paper cash account is missing")
