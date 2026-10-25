@@ -5,6 +5,7 @@ No exchange connectivity, credentials, order submission, or live trading.
 from __future__ import annotations
 
 import math
+from contextlib import closing
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -38,7 +39,7 @@ class SQLiteRiskLedger:
     def __init__(self, db_path: str | Path):
         self.db_path = str(db_path)
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 con.execute("PRAGMA journal_mode=WAL")
                 con.execute("""CREATE TABLE IF NOT EXISTS executions (
                     execution_id TEXT PRIMARY KEY,
@@ -79,7 +80,7 @@ class SQLiteRiskLedger:
         fees = self._finite(fees_usdt, "fees", nonnegative=True)
         timestamp = self._timestamp(executed_at)
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 con.execute("INSERT INTO executions VALUES (?, ?, ?, ?)",
                             (execution_id.strip(), pnl, fees, timestamp))
         except sqlite3.IntegrityError as exc:
@@ -92,7 +93,7 @@ class SQLiteRiskLedger:
         start = current.replace(hour=0, minute=0, second=0, microsecond=0)
         end = start + timedelta(days=1)
         try:
-            with self._connect() as con:
+            with closing(self._connect()) as con, con:
                 rows = con.execute(
                     "SELECT execution_id, realized_pnl_usdt, fees_usdt FROM executions "
                     "WHERE executed_at_utc >= ? AND executed_at_utc < ?",
