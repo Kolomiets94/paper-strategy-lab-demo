@@ -204,13 +204,20 @@ class PaperPortfolio:
             # Ledger entry, cash update, and position removal share one SQLite
             # transaction: a crash cannot leave a recorded fill with an open position.
             with self._connect() as con:
+                cash_row = con.execute("SELECT cash_usdt FROM paper_account WHERE id=1").fetchone()
+                if cash_row is None:
+                    raise InvalidRiskDataError("Paper cash account is missing")
+                cash_before = self._number(cash_row[0], "paper cash")
+                cash_after = self._number(cash_before + gross_proceeds - exit_fee, "paper cash after close")
                 con.execute(
                     "INSERT INTO executions (execution_id, realized_pnl_usdt, fees_usdt, executed_at_utc) VALUES (?, ?, ?, ?)",
                     (exec_id.strip(), SQLiteRiskLedger._finite(gross_pnl, "realized P&L"),
                      SQLiteRiskLedger._finite(total_fees, "fees", nonnegative=True), timestamp),
                 )
-                con.execute("UPDATE paper_account SET cash_usdt=cash_usdt+? WHERE id=1",
-                            (gross_proceeds - exit_fee,))
+                changed = con.execute("UPDATE paper_account SET cash_usdt=? WHERE id=1",
+                                      (cash_after,)).rowcount
+                if changed != 1:
+                    raise InvalidRiskDataError("Paper cash account changed; transaction rolled back")
                 deleted = con.execute("DELETE FROM paper_positions WHERE symbol=?", (symbol,)).rowcount
                 if deleted != 1:
                     raise InvalidRiskDataError("Position changed during close; transaction rolled back")
