@@ -139,8 +139,14 @@ class PaperPortfolio:
         if signal == "BUY":
             if symbol in positions:
                 return "ALREADY_OPEN"
-            # Fixed notional makes the max position cap easy to audit.
-            notional = min(self.config.max_position_notional_usdt, self._cash())
+            # Size down to leave room for the entry fee while respecting the cap.
+            available_cash = self._cash()
+            notional = min(
+                self.config.max_position_notional_usdt,
+                available_cash / (1.0 + self.fee_rate),
+            )
+            if notional <= 0:
+                return "INSUFFICIENT_CASH"
             if not self.risk.can_open_position(notional, now):
                 return "RISK_BLOCKED"
             fee = notional * self.fee_rate
@@ -186,6 +192,7 @@ class PaperPortfolio:
         if not math.isfinite(gross_proceeds - exit_fee):
             raise InvalidRiskDataError("Net sale proceeds are invalid")
         net_pnl = gross_pnl - total_fees
+        SQLiteRiskLedger._finite(net_pnl, "net realized P&L")
         exec_id = f"paper-{uuid.uuid4().hex}" if execution_id is None else execution_id
         if not isinstance(exec_id, str) or not exec_id.strip():
             raise InvalidRiskDataError("execution_id must be non-empty")
@@ -214,6 +221,11 @@ class PaperPortfolio:
     def process_signals(self, prices: Mapping[str, float], signals: Mapping[str, str],
                         now: datetime) -> dict[str, str]:
         """Process only supplied symbols/signals; missing symbols are ignored."""
+        if not isinstance(prices, Mapping) or not isinstance(signals, Mapping):
+            raise InvalidRiskDataError("prices and signals must be mappings")
+        unknown_symbols = set(signals) - set(SUPPORTED_SYMBOLS)
+        if unknown_symbols:
+            raise InvalidRiskDataError(f"Unsupported signal symbols: {sorted(map(str, unknown_symbols))}")
         outcomes = {}
         for symbol in SUPPORTED_SYMBOLS:
             if symbol in signals:
