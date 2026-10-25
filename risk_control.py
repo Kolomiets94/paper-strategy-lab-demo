@@ -63,7 +63,10 @@ class SQLiteRiskLedger:
     def _finite(value, label: str, *, nonnegative: bool = False) -> float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise InvalidRiskDataError(f"{label} must be a finite number")
-        result = float(value)
+        try:
+            result = float(value)
+        except (OverflowError, ValueError) as exc:
+            raise InvalidRiskDataError(f"Invalid {label}") from exc
         if not math.isfinite(result) or (nonnegative and result < 0):
             raise InvalidRiskDataError(f"Invalid {label}")
         return result
