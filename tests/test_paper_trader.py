@@ -72,6 +72,12 @@ class PaperPortfolioTests(unittest.TestCase):
             self.bot.apply_signal("BTC", "SELL", 51000, self.now, execution_id="")
         self.assertEqual(len(self.bot.positions()), 1)
 
+    def test_invalid_fee_rate_fails_closed(self):
+        for fee_rate in (-0.1, 1.0, float("nan"), 10 ** 1000):
+            with self.subTest(fee_rate=str(fee_rate)[:20]):
+                with self.assertRaises(InvalidRiskDataError):
+                    PaperPortfolio(Path(self.temp.name) / f"fee-{len(str(fee_rate))}.sqlite3", fee_rate=fee_rate)
+
     def test_small_cash_sizes_position_to_include_fee(self):
         small_db = Path(self.temp.name) / "small.sqlite3"
         small = PaperPortfolio(small_db, config=RiskConfig(paper_capital_usdt=50.0), fee_rate=0.001)
