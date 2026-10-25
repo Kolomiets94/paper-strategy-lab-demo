@@ -194,8 +194,22 @@ def run_backtest(bars: Iterable[Bar], *, capital: float = 1000.0,
         if peak > 0:
             max_drawdown = min(max_drawdown, (equity - peak) / peak)
     wins = sum(1 for pnl in trade_results if pnl > 0)
+
+    # Benchmark: buy one capped spot position at the first bar's open and hold
+    # until the final close, with the same fee and adverse-slippage assumptions.
+    benchmark_notional = min(float(max_position), float(capital) / (1.0 + float(fee_rate)))
+    benchmark_entry = bars[0].open * (1.0 + slip)
+    benchmark_qty = benchmark_notional / benchmark_entry
+    benchmark_entry_fee = benchmark_notional * float(fee_rate)
+    benchmark_exit = bars[-1].close * (1.0 - slip)
+    benchmark_proceeds = benchmark_qty * benchmark_exit
+    benchmark_exit_fee = benchmark_proceeds * float(fee_rate)
+    benchmark_net_pnl = benchmark_proceeds - benchmark_notional - benchmark_entry_fee - benchmark_exit_fee
+    benchmark_final_equity = float(capital) + benchmark_net_pnl
+
     return {
         "mode": "HISTORICAL_PAPER_BACKTEST",
+        "data_source": "Binance Spot public BTCUSDT daily klines",
         "symbol": "BTCUSDT",
         "bars": len(bars),
         "start_utc": bars[0].timestamp.isoformat(),
@@ -204,6 +218,10 @@ def run_backtest(bars: Iterable[Bar], *, capital: float = 1000.0,
         "final_equity_usdt": round(final_equity, 6),
         "total_net_pnl_usdt": round(total_net_pnl, 6),
         "return_pct": round((final_equity / capital - 1) * 100, 6),
+        "buy_and_hold_benchmark_net_pnl_usdt": round(benchmark_net_pnl, 6),
+        "buy_and_hold_benchmark_return_pct": round((benchmark_final_equity / capital - 1) * 100, 6),
+        "buy_and_hold_benchmark_total_fees_usdt": round(benchmark_entry_fee + benchmark_exit_fee, 6),
+        "max_drawdown_method": "daily close-marked equity; intraday excursions are not captured",
         "closed_trades": len(trade_results),
         "winning_trades": wins,
         "win_rate_pct": round(wins / len(trade_results) * 100, 4) if trade_results else 0.0,
