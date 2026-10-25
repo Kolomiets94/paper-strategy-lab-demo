@@ -27,6 +27,8 @@ class HistoricalBacktestTests(unittest.TestCase):
             result["total_net_pnl_usdt"], places=5
         )
         self.assertGreaterEqual(result["total_fees_usdt"], 0)
+        self.assertIn("buy_and_hold_benchmark_net_pnl_usdt", result)
+        self.assertEqual(result["data_source"], "Binance Spot public BTCUSDT daily klines")
 
     def test_signal_only_sees_candles_before_execution_bar(self):
         seen = []
