@@ -72,6 +72,18 @@ class PaperPortfolioTests(unittest.TestCase):
             self.bot.apply_signal("BTC", "SELL", 51000, self.now, execution_id="")
         self.assertEqual(len(self.bot.positions()), 1)
 
+    def test_small_cash_sizes_position_to_include_fee(self):
+        small_db = Path(self.temp.name) / "small.sqlite3"
+        small = PaperPortfolio(small_db, config=RiskConfig(paper_capital_usdt=50.0), fee_rate=0.001)
+        self.assertEqual(small.apply_signal("BTC", "BUY", 50000, self.now), "OPENED")
+        self.assertLessEqual(small._cash(), 0.000001)
+        self.assertGreaterEqual(small._cash(), 0.0)
+        self.assertLessEqual(small.positions()["BTC"].entry_notional_usdt, 50.0)
+
+    def test_unknown_signal_symbol_fails_closed(self):
+        with self.assertRaises(InvalidRiskDataError):
+            self.bot.process_signals({"DOGE": 1.0}, {"DOGE": "BUY"}, self.now)
+
     def test_hold_does_not_trade(self):
         self.assertEqual(self.bot.apply_signal("BTC", "HOLD", 50000, self.now), "HOLD")
         self.assertEqual(len(self.bot.positions()), 0)
