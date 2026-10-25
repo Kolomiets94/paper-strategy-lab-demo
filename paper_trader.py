@@ -59,7 +59,7 @@ class PaperPortfolio:
         self.config = config
         self.fee_rate = fee_value
         self.ledger = SQLiteRiskLedger(db_path)
-        self.risk = PaperRiskController(self.ledger, config)
+        self.risk = PaperRiskController(self.ledger, config, fee_rate=self.fee_rate)
         try:
             with closing(sqlite3.connect(self.db_path, timeout=5.0)) as con, con:
                 existing_tables = {
@@ -105,6 +105,11 @@ class PaperPortfolio:
                     entry_fee_usdt REAL NOT NULL,
                     opened_at TEXT NOT NULL
                 )""")
+                con.execute("""CREATE TABLE IF NOT EXISTS mark_prices (
+                    symbol TEXT PRIMARY KEY,
+                    price_usdt REAL NOT NULL,
+                    marked_at_utc TEXT NOT NULL
+                )""")
         except InvalidRiskDataError:
             raise
         except (sqlite3.Error, OSError) as exc:
@@ -126,6 +131,28 @@ class PaperPortfolio:
             return sqlite3.connect(self.db_path, timeout=5.0)
         except (sqlite3.Error, OSError) as exc:
             raise LedgerUnavailableError("Paper database unavailable") from exc
+
+    def _save_marks(self, prices: Mapping[str, float], now: datetime) -> None:
+        """Persist caller-supplied marks so entry checks can include open-position risk."""
+        if not isinstance(prices, Mapping):
+            raise InvalidRiskDataError("prices must be a mapping")
+        timestamp = self._now(now)
+        try:
+            with closing(self._connect()) as con, con:
+                for symbol, value in prices.items():
+                    if symbol not in SUPPORTED_SYMBOLS:
+                        continue
+                    price = self._number(value, f"mark price for {symbol}", positive=True)
+                    con.execute(
+                        "INSERT INTO mark_prices(symbol, price_usdt, marked_at_utc) VALUES (?, ?, ?) "
+                        "ON CONFLICT(symbol) DO UPDATE SET price_usdt=excluded.price_usdt, "
+                        "marked_at_utc=excluded.marked_at_utc",
+                        (symbol, price, timestamp),
+                    )
+        except InvalidRiskDataError:
+            raise
+        except (sqlite3.Error, OSError) as exc:
+            raise LedgerUnavailableError("Could not persist paper mark prices") from exc
 
     def positions(self) -> dict[str, PaperPosition]:
         try:
@@ -168,6 +195,7 @@ class PaperPortfolio:
         timestamp = self._now(now)
         if signal == "HOLD":
             return "HOLD"
+        self._save_marks({symbol: price}, now)
         positions = self.positions()
         if signal == "BUY":
             if symbol in positions:
@@ -274,6 +302,9 @@ class PaperPortfolio:
         unknown_symbols = set(signals) - set(SUPPORTED_SYMBOLS)
         if unknown_symbols:
             raise InvalidRiskDataError(f"Unsupported signal symbols: {sorted(map(str, unknown_symbols))}")
+        # Refresh every available mark before evaluating entries, so the risk gate
+        # sees current unrealized P&L for positions already held in the portfolio.
+        self._save_marks(prices, now)
         outcomes = {}
         for symbol in SUPPORTED_SYMBOLS:
             if symbol in signals:
@@ -283,6 +314,7 @@ class PaperPortfolio:
         return outcomes
 
     def snapshot(self, prices: Mapping[str, float], now: datetime) -> PaperSnapshot:
+        self._save_marks(prices, now)
         positions = self.positions()
         market_value = 0.0
         for symbol, position in positions.items():
@@ -293,9 +325,10 @@ class PaperPortfolio:
         equity = cash + market_value
         if not math.isfinite(equity) or equity < 0:
             raise InvalidRiskDataError("Invalid paper equity")
-        daily_pnl = self.ledger.daily_net_pnl_usdt(now)
-        return PaperSnapshot(cash, equity, len(positions), daily_pnl,
-                             daily_pnl <= -self.config.daily_loss_limit_usdt)
+        realized_daily_pnl = self.ledger.daily_net_pnl_usdt(now)
+        daily_risk_pnl = self.risk.daily_risk_pnl_usdt(now)
+        return PaperSnapshot(cash, equity, len(positions), realized_daily_pnl,
+                             daily_risk_pnl <= -self.config.daily_loss_limit_usdt)
 
     def status(self, prices: Mapping[str, float], now: datetime) -> dict:
         snap = self.snapshot(prices, now)
@@ -306,6 +339,9 @@ class PaperPortfolio:
             "equity_usdt": round(snap.equity_usdt, 6),
             "open_positions": snap.open_positions,
             "realized_net_pnl_today_usdt": round(snap.realized_net_pnl_today_usdt, 6),
+            "daily_risk_pnl_including_unrealized_usdt": round(
+                self.risk.daily_risk_pnl_usdt(now), 6
+            ),
             "daily_stop_usdt": -self.config.daily_loss_limit_usdt,
             "max_position_notional_usdt": self.config.max_position_notional_usdt,
             "trading_blocked": snap.trading_blocked,
