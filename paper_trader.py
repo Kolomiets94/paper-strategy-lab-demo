@@ -68,6 +68,10 @@ class PaperPortfolio:
                 }
                 account_exists = "paper_account" in existing_tables
                 positions_exist = "paper_positions" in existing_tables
+                if account_exists != positions_exist:
+                    raise InvalidRiskDataError(
+                        "Paper portfolio database has an incomplete account/positions schema"
+                    )
 
                 if account_exists:
                     row = con.execute(
