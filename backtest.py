@@ -140,8 +140,10 @@ def run_backtest(bars: Iterable[Bar], *, capital: float = 1000.0,
             history = [bar.close for bar in bars[:i]]
             signal = sma_crossover_signal(history, fast_window=fast_window, slow_window=slow_window)
             bar = bars[i]
+            # Refresh the open-position mark at the execution bar's open before
+            # checking the daily loss stop or processing the strategy signal.
+            portfolio.snapshot({"BTC": bar.open}, bar.timestamp)
             fill = bar.open * (1 + slip) if signal == "BUY" else bar.open * (1 - slip)
-            before_count = len(execution_times)
             result = portfolio.apply_signal("BTC", signal, fill, bar.timestamp,
                                             execution_id=f"bt-{i}-{signal.lower()}")
             if result.startswith("CLOSED "):
@@ -153,9 +155,10 @@ def run_backtest(bars: Iterable[Bar], *, capital: float = 1000.0,
                 if row:
                     trade_results.append(float(row[0]) - float(row[1]))
                     execution_times.append(bar.timestamp)
-            positions = portfolio.positions()
-            marked_value = sum(p.quantity * bar.close for p in positions.values())
-            equity = portfolio._cash() + marked_value
+            # Mark at the completed candle close for the equity curve and for
+            # the next bar's risk gate. Intraday losses remain unobserved by daily bars.
+            snapshot = portfolio.snapshot({"BTC": bar.close}, bar.timestamp)
+            equity = snapshot.equity_usdt
             if not math.isfinite(equity) or equity < 0:
                 raise InvalidRiskDataError("Backtest equity became invalid")
             equity_curve.append(equity)
