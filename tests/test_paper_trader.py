@@ -66,6 +66,25 @@ class PaperPortfolioTests(unittest.TestCase):
         self.bot.ledger.record_execution("loss1", -4.8, 0.2, self.now)
         self.assertEqual(self.bot.apply_signal("BTC", "BUY", 50000, self.now), "RISK_BLOCKED")
 
+    def test_entry_rechecks_loss_stop_after_initial_gate(self):
+        original_gate = self.bot.risk.can_open_position
+        calls = 0
+
+        def inject_concurrent_loss(notional, now):
+            nonlocal calls
+            calls += 1
+            allowed = original_gate(notional, now)
+            if calls == 1:
+                self.bot.ledger.record_execution("concurrent-loss", -6.0, 0.0, now)
+            return allowed
+
+        self.bot.risk.can_open_position = inject_concurrent_loss
+        self.assertEqual(
+            self.bot.apply_signal("BTC", "BUY", 50000, self.now), "RISK_BLOCKED"
+        )
+        self.assertEqual(calls, 2)
+        self.assertEqual(len(self.bot.positions()), 0)
+
     def test_max_notional_is_100(self):
         self.bot.apply_signal("BTC", "BUY", 50000, self.now)
         position = self.bot.positions()["BTC"]
