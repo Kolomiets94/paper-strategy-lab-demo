@@ -59,21 +59,19 @@ class HistoricalBacktestTests(unittest.TestCase):
             path = Path(td) / "bars.csv"
             now = datetime(2024, 1, 3, tzinfo=timezone.utc)
             rows = [
-                {"timestamp": int((now - timedelta(days=2)).timestamp() * 1000),
-                 "open": "100", "close": "101",
-                 "close_time": int((now - timedelta(days=1, milliseconds=1)).timestamp() * 1000)},
-                {"timestamp": int((now - timedelta(days=1)).timestamp() * 1000),
-                 "open": "101", "close": "102",
-                 "close_time": int((now - timedelta(milliseconds=1)).timestamp() * 1000)},
-                {"timestamp": int(now.timestamp() * 1000), "open": "102", "close": "103",
-                 "close_time": int((now + timedelta(days=1)).timestamp() * 1000)},
+                {"timestamp": int((now - timedelta(days=9-i)).timestamp() * 1000),
+                 "open": str(100+i), "close": str(101+i),
+                 "close_time": int((now - timedelta(days=8-i, milliseconds=1)).timestamp() * 1000)}
+                for i in range(8)
             ]
+            rows.append({"timestamp": int(now.timestamp() * 1000), "open": "108", "close": "109",
+                         "close_time": int((now + timedelta(days=1)).timestamp() * 1000)})
             with path.open("w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=["timestamp", "open", "close", "close_time"])
                 writer.writeheader()
                 writer.writerows(rows)
             loaded = load_bars(path, as_of=now)
-            self.assertEqual(len(loaded), 2)
+            self.assertEqual(len(loaded), 8)
 
     def test_duplicate_or_out_of_order_timestamps_rejected(self):
         duplicate = list(self.bars)
