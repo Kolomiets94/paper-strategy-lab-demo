@@ -35,6 +35,8 @@ def sma_crossover_signal(closes: Sequence[float], *, fast_window: int = 3,
     def means(end: int) -> tuple[float, float]:
         fast = sum(values[end-fast_window:end]) / fast_window
         slow = sum(values[end-slow_window:end]) / slow_window
+        if not math.isfinite(fast) or not math.isfinite(slow):
+            raise InvalidRiskDataError("Moving averages overflowed")
         return fast, slow
 
     previous_fast, previous_slow = means(len(values) - 1)
