@@ -6,10 +6,12 @@ on:
     branches: [main]
     paths:
       - "research_report.py"
+      - "walk_forward.py"
       - "backtest.py"
       - "paper_trader.py"
       - "risk_control.py"
       - "signal_strategy.py"
+      - "tests/**"
       - ".github/workflows/research-report.yml"
 
 permissions:
@@ -30,12 +32,15 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Download public candles and run paper backtest
         run: python research_report.py --start 2024-01-01 --end "$(date -u +%F)" --csv data/BTCUSDT_1d.csv --output research-report.json
-      - name: Upload candles and report
+      - name: Build walk-forward holdout report
+        run: python walk_forward.py research-report.json --output walk-forward-report.json
+      - name: Upload candles and reports
         uses: actions/upload-artifact@v4
         with:
           name: btcusdt-historical-research
           path: |
             data/BTCUSDT_1d.csv
             research-report.json
+            walk-forward-report.json
           if-no-files-found: error
           retention-days: 30
