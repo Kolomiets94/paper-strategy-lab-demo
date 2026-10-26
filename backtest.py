@@ -100,10 +100,18 @@ def load_bars(path: str | Path, *, as_of: datetime | None = None) -> list[Bar]:
 def run_backtest(bars: Iterable[Bar], *, capital: float = 1000.0,
                  max_position: float = 100.0, daily_loss_limit: float = 5.0,
                  fee_rate: float = 0.001, slippage_bps: float = 5.0,
-                 fast_window: int = 3, slow_window: int = 5) -> dict:
+                 fast_window: int = 3, slow_window: int = 5,
+                 evaluation_start_index: int = 0) -> dict:
     bars = list(bars)
     if len(bars) < slow_window + 2:
         raise InvalidRiskDataError("Not enough candles for the selected SMA windows")
+    if isinstance(evaluation_start_index, bool) or not isinstance(evaluation_start_index, int):
+        raise InvalidRiskDataError("evaluation_start_index must be an integer")
+    if evaluation_start_index < 0 or evaluation_start_index >= len(bars):
+        raise InvalidRiskDataError("evaluation_start_index must identify a candle in the input")
+    evaluation_bars = bars[evaluation_start_index:]
+    if len(evaluation_bars) < slow_window + 2:
+        raise InvalidRiskDataError("Not enough evaluation candles for the selected SMA windows")
     if isinstance(fast_window, bool) or isinstance(slow_window, bool) or not isinstance(fast_window, int) or not isinstance(slow_window, int):
         raise InvalidRiskDataError("SMA windows must be integers")
     if fast_window < 1 or slow_window <= fast_window:
@@ -136,7 +144,7 @@ def run_backtest(bars: Iterable[Bar], *, capital: float = 1000.0,
         portfolio = PaperPortfolio(db_path, config=config, fee_rate=float(fee_rate))
         # At candle i's open, only candles strictly before i are known. The signal
         # therefore uses bars[:i], then trades at the next candle's open.
-        for i in range(slow_window + 1, len(bars)):
+        for i in range(max(slow_window + 1, evaluation_start_index), len(bars)):
             history = [bar.close for bar in bars[:i]]
             signal = sma_crossover_signal(history, fast_window=fast_window, slow_window=slow_window)
             bar = bars[i]
@@ -201,10 +209,10 @@ def run_backtest(bars: Iterable[Bar], *, capital: float = 1000.0,
     # Benchmark: buy one capped spot position at the first bar's open and hold
     # until the final close, with the same fee and adverse-slippage assumptions.
     benchmark_notional = min(float(max_position), float(capital) / (1.0 + float(fee_rate)))
-    benchmark_entry = bars[0].open * (1.0 + slip)
+    benchmark_entry = evaluation_bars[0].open * (1.0 + slip)
     benchmark_qty = benchmark_notional / benchmark_entry
     benchmark_entry_fee = benchmark_notional * float(fee_rate)
-    benchmark_exit = bars[-1].close * (1.0 - slip)
+    benchmark_exit = evaluation_bars[-1].close * (1.0 - slip)
     benchmark_proceeds = benchmark_qty * benchmark_exit
     benchmark_exit_fee = benchmark_proceeds * float(fee_rate)
     benchmark_net_pnl = benchmark_proceeds - benchmark_notional - benchmark_entry_fee - benchmark_exit_fee
@@ -214,9 +222,10 @@ def run_backtest(bars: Iterable[Bar], *, capital: float = 1000.0,
         "mode": "HISTORICAL_PAPER_BACKTEST",
         "data_source": "Binance Spot public BTCUSDT daily klines",
         "symbol": "BTCUSDT",
-        "bars": len(bars),
-        "start_utc": bars[0].timestamp.isoformat(),
-        "end_utc": bars[-1].timestamp.isoformat(),
+        "bars": len(evaluation_bars),
+        "warmup_bars": evaluation_start_index,
+        "start_utc": evaluation_bars[0].timestamp.isoformat(),
+        "end_utc": evaluation_bars[-1].timestamp.isoformat(),
         "initial_capital_usdt": round(float(capital), 6),
         "final_equity_usdt": round(final_equity, 6),
         "total_net_pnl_usdt": round(total_net_pnl, 6),
