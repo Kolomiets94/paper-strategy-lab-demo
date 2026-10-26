@@ -1,0 +1,41 @@
+name: Historical research report
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "research_report.py"
+      - "backtest.py"
+      - "paper_trader.py"
+      - "risk_control.py"
+      - "signal_strategy.py"
+      - ".github/workflows/research-report.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Download public candles and run paper backtest
+        run: python research_report.py --start 2024-01-01 --end "$(date -u +%F)" --csv data/BTCUSDT_1d.csv --output research-report.json
+      - name: Upload candles and report
+        uses: actions/upload-artifact@v4
+        with:
+          name: btcusdt-historical-research
+          path: |
+            data/BTCUSDT_1d.csv
+            research-report.json
+          if-no-files-found: error
+          retention-days: 30
